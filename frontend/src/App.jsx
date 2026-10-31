@@ -8,6 +8,11 @@ import Overview from './pages/Overview';
 import Investigation from './pages/Investigation';
 import EvidenceExplorer from './pages/EvidenceExplorer';
 import Recovery from './pages/Recovery';
+import Runs from './pages/Runs';
+import Connectors from './pages/Connectors';
+import Policies from './pages/Policies';
+import Observability from './pages/Observability';
+import Organization from './pages/Organization';
 import { api } from './api';
 
 export default function App() {
@@ -31,27 +36,16 @@ export default function App() {
       .catch(() => {});
   }, []);
 
-  const handleReset = async () => {
-    try {
-      await api.resetDatabase();
-      const inv = await api.createInvestigation();
-      setCurrentInvId(inv.id);
-      await api.stepInvestigation(inv.id);
-    } catch (err) {
-      console.error("Reset failed:", err);
-    }
-  };
-
   return (
     <BrowserRouter>
       <div className="flex h-screen w-screen overflow-hidden bg-[#F8FAFC] text-slate-900 font-sans antialiased">
-        {/* Left Control Plane Navigation matching HAC-FEW / Agent Control Plane */}
+        {/* Left Control Plane Navigation */}
         <Sidebar llmStatus={llmStatus} />
 
         {/* Main Content Viewport */}
         <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
           <Routes>
-            <Route path="/" element={<Overview />} />
+            <Route path="/" element={<Overview currentInvId={currentInvId} />} />
             <Route
               path="/plan-and-run"
               element={
@@ -71,12 +65,6 @@ export default function App() {
               }
             />
             <Route
-              path="/agents"
-              element={
-                <Agents currentInvId={currentInvId} />
-              }
-            />
-            <Route
               path="/investigation"
               element={
                 <Investigation 
@@ -85,14 +73,15 @@ export default function App() {
                 />
               }
             />
-            <Route
-              path="/evidence"
-              element={<EvidenceExplorer currentInvId={currentInvId} />}
-            />
-            <Route
-              path="/recovery"
-              element={<Recovery currentInvId={currentInvId} />}
-            />
+            <Route path="/runs" element={<Runs />} />
+            <Route path="/recovery" element={<Recovery currentInvId={currentInvId} />} />
+            <Route path="/agents" element={<Agents currentInvId={currentInvId} />} />
+            <Route path="/evidence" element={<EvidenceExplorer currentInvId={currentInvId} />} />
+            <Route path="/outages" element={<Connectors />} />
+            <Route path="/connectors" element={<Connectors />} />
+            <Route path="/policies" element={<Policies />} />
+            <Route path="/observability" element={<Observability />} />
+            <Route path="/organization" element={<Organization />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </div>

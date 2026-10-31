@@ -399,11 +399,14 @@ def errors_by_version(service: Optional[str] = None) -> Dict[str, Any]:
             rate = (errs / tot * 100) if tot > 0 else 0.0
             ver_stats.append({"version": r["version"], "rate": round(rate, 2), "total": tot, "errors": errs})
 
+            id_sql = ("SELECT id FROM spans WHERE branch = 'incident' AND ts >= '2026-10-30T14:14:00Z' "
+                      "AND version IS ? " + ("AND service_id = ? " if service else "") + "ORDER BY (status = '500') DESC, id LIMIT 25")
+            span_ids = [x["id"] for x in c.execute(id_sql, [r["version"]] + ([service] if service else [])).fetchall()]
             observations.append({
                 "text": f"Version {r['version']}: error rate {rate:.2f}% ({errs}/{tot} spans in incident window)",
                 "ts": "2026-10-30T14:40:00Z",
                 "data": {"version": r["version"], "error_rate_pct": round(rate, 2), "total_spans": tot, "error_spans": errs},
-                "refs": [{"table": "spans", "ids": []}]
+                "refs": [{"table": "spans", "ids": span_ids}]
             })
 
         summary = "Error rate breakdown across software versions"

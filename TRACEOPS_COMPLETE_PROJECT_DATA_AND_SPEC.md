@@ -32,7 +32,7 @@ Deterministic Hypothesis & Causal Scoring Engine
   └── Relative Evidence Share (Bayesian Heuristics)
           │
           ▼
-Groq AI Grounded Narrator (qwen/qwen3.8-27b)
+Grounded Narrator (Groq/Ollama/template; optional)
   ├── Strict Sentence-Level Citation Grounding Check (Threshold ≥ 0.8)
   ├── Hallucination & Prompt-Injection Defense
   └── Deterministic Template Fallback
@@ -75,109 +75,18 @@ The system includes a reproducible deterministic operational dataset generated w
 
 ---
 
-### 2.2 Ground-Truth Incident Timeline
+### 2.2 Ground-Truth Incident Timeline (as seeded in `backend/app/seed.py`)
 
 * **Scenario Window**: `2026-10-30T13:00:00Z` to `2026-10-30T14:40:00Z`
-* **Trigger Event**: `2026-10-30T13:30:00Z`
-* **Root Cause Event**: Canary deployment `v2.14.0` deployed to `payment-service` at 13:28 UTC. Although code differences were cosmetic, the deployment manifest contained an unintended configuration regression:
-  ```json
-  "config_diff": {
-    "service": "payment-service",
-    "param": "DB_POOL_MAX_CONNECTIONS",
-    "old_value": "25",
-    "new_value": "10",
-    "deployed_by": "gitops-bot",
-    "commit": "a8f3b29c"
-  }
-  ```
-* **Consequence**: Under sustained throughput (50 req/sec), connection pool exhaustion occurred on `payment-service` (`pool_active` reached 10/10), causing thread starvation, 5000ms request timeouts, and cascading 5xx payment gateway errors to `checkout-api`.
-* **Disproved Red Herrings**:
-  1. *Database Saturation*: `payments-db` CPU stayed nominal at 31% utilization; query execution times remained healthy (< 5ms). The bottleneck was the connection pool queue limit on the app layer, not the database hardware.
-  2. *Third-Party Stripe Outage*: Stripe p99 response times remained at 145ms; zero 5xx errors from Stripe.
-  3. *Canary Code Regression*: Comparing error rates across canary versions demonstrated error parity (v2.13.9: 10.78% vs v2.14.0: 9.18%, diff = 1.60% $\le 2.0\%$). The bug was purely configuration, not application logic.
-
----
-
-### 2.3 Operational Logs Sample (Seeded Fixture)
-
-The database contains 455 application and infrastructure logs. Below is an authentic representative sample extracted directly from SQLite:
-
-```json
-[
-  {
-    "id": 12,
-    "ts": "2026-10-30T13:37:09Z",
-    "service_id": "payment-service",
-    "level": "ERROR",
-    "message": "PoolTimeoutError: timed out after 5000ms waiting for connection (pool=10/10)",
-    "trace_id": "trc-0061"
-  },
-  {
-    "id": 13,
-    "ts": "2026-10-30T13:37:09Z",
-    "service_id": "checkout-api",
-    "level": "ERROR",
-    "message": "PaymentGatewayError: Downstream call to payment-service failed for order trc-0061",
-    "trace_id": "trc-0061"
-  },
-  {
-    "id": 18,
-    "ts": "2026-10-30T13:38:15Z",
-    "service_id": "payment-service",
-    "level": "ERROR",
-    "message": "PoolTimeoutError: timed out after 5000ms waiting for connection (pool=10/10)",
-    "trace_id": "trc-0072"
-  },
-  {
-    "id": 25,
-    "ts": "2026-10-30T13:40:02Z",
-    "service_id": "payment-service",
-    "level": "WARN",
-    "message": "Pool queue threshold exceeded: 18 pending requests in wait queue",
-    "trace_id": "trc-0091"
-  },
-  {
-    "id": 31,
-    "ts": "2026-10-30T13:41:20Z",
-    "service_id": "payments-db",
-    "level": "INFO",
-    "message": "Checkpoint complete: 142 buffers written in 0.42s; active server backend count: 10",
-    "trace_id": null
-  },
-  {
-    "id": 44,
-    "ts": "2026-10-30T13:42:01Z",
-    "service_id": "checkout-api",
-    "level": "ERROR",
-    "message": "CircuitBreakerWarning: payment-service error rate exceeded 15% in 60s sliding window",
-    "trace_id": "trc-0112"
-  }
-]
-```
-
----
-
-### 2.4 Time Series Metrics Dataset Sample
-
-The dataset includes 1,550 timeseries points sampled at 1-minute intervals across all services:
-
-| Timestamp (UTC) | `checkout-api` p95 Latency | `checkout-api` Error Rate | `payment-service` Pool Active | `payments-db` CPU Utilization |
-| :--- | :--- | :--- | :--- | :--- |
-| 13:20:00 | 185 ms (Normal) | 0.002 (0.2%) | 6 / 25 | 28.4% |
-| 13:25:00 | 192 ms (Normal) | 0.003 (0.3%) | 7 / 25 | 29.1% |
-| 13:28:00 (Deploy) | 210 ms (Normal) | 0.002 (0.2%) | 8 / 10 | 30.2% |
-| 13:32:00 (Onset) | 640 ms (Anomalous) | 0.045 (4.5%) | 10 / 10 (Saturated) | 31.0% |
-| 13:35:00 | 2,850 ms (Severe) | 0.185 (18.5%) | 10 / 10 (Saturated) | 30.8% |
-| 13:40:00 (Peak) | 5,120 ms (Timeout) | 0.282 (28.2%) | 10 / 10 (Saturated) | 31.5% |
-
----
-
-### 2.5 Active Alerts & Operator Tickets
-
-* **Alert `alt-001`**: `CheckoutLatencySpike` (CRITICAL) — `checkout-api p95 > 1000ms for 3 consecutive intervals`
-* **Alert `alt-002`**: `PaymentGateway5xxErrorSurge` (CRITICAL) — `payment-service 5xx response rate > 10%`
-* **Alert `alt-003`**: `ConnectionPoolSaturation` (HIGH) — `payment-service active pool connections == 10/10`
-* **Ticket `tkt-101`**: *"Checkout failing on step 3 with 'Payment processing timed out'. Multiple user reports from US-East region."*
+* **Distractor**: 14:00 `checkout-api` v2.14.0 staged rollout (50%) — emits a benign tax-calculation warning.
+* **Root Cause Event**: 14:07 `payment-service` config `db.pool.max_connections` changed **50 → 10** (CHG-4821).
+* **Distractor**: 14:10–14:16 traffic +30%.
+* **Onset**: ~14:14 pool pins at 10/10, pool wait 3.5–5 s; peak error rate checkout 11.4% / payment 14.5%; peak p95 ≈ 5.5 s.
+* **Disproved hypotheses**:
+  1. *Release regression*: error rate by version is at parity (v2.13.9 10.78% vs v2.14.0 9.18%, diff 1.60 pp).
+  2. *Database saturation*: `payments-db` CPU 16.9%, query p95 17.7 ms.
+  3. *Third-party outage*: fault origin localizes to `payment-service`, downstream dependencies are healthy.
+* Every figure in the live report (duration, failed traces, peak rates) is computed from the stored telemetry at request time.
 
 ---
 
@@ -190,9 +99,9 @@ The investigation core is deterministic and strictly separate from the LLM.
 ```
 H_POOL:      Connection pool exhaustion in payment-service due to config change
 H_DEPLOY:    Code regression introduced in deployment v2.14.0
-H_DB_SAT:    Database resource saturation (CPU/IOPS) on payments-db
-H_UPSTREAM:  Traffic surge or malformed payload pattern on checkout-api
-H_THIRD_PARTY: Downstream payment provider (Stripe) degradation or outage
+H_DB:        Database resource saturation (CPU/IOPS) on payments-db
+H_TRAFFIC:   Traffic surge or malformed payload pattern on checkout-api
+H_EXTERNAL:  Downstream payment provider (Stripe) degradation or outage
 ```
 
 ### 3.2 Scoring & Bayesian Evidence Share
@@ -302,7 +211,7 @@ The frontend is built in React + Vite with Tailwind CSS and Recharts, styled aft
 ```powershell
 cd backend
 python -m pytest tests -q
-# Output: 36 passed in 4.09s
+# Output: 50 passed
 ```
 
 ### 7.2 Run Both Services in Background

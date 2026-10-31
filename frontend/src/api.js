@@ -94,6 +94,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ tool, enabled })
     }),
-  verifyAudit: () => request('/api/audit/verify')
+  verifyAudit: () => request('/api/audit/verify'),
+
+  // Lifecycle Stages 6, 7, 11 & Section 3
+  getHistoricalIntelligence: (id) => request(`/api/investigation/${id}/historical`),
+  getPostIncidentReport: (id) => request(`/api/investigation/${id}/report`),
+  createPostIncidentReport: (id) => request(`/api/investigation/${id}/report`, { method: 'POST' }),
+  getEffectivenessMetrics: () => request('/api/metrics/effectiveness'),
+
+  // Platform & Governance Operations
+  getRuns: () => request('/api/runs'),
+  getConnectors: () => request('/api/connectors'),
+  syncConnector: (id) => request(`/api/connectors/${id}/sync`, { method: 'POST' }),
+  getPolicies: () => request('/api/policies'),
+  getObservabilityStats: () => request('/api/observability/stats')
 };
 

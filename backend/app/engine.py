@@ -79,6 +79,80 @@ def softmax(x: np.ndarray) -> np.ndarray:
     return e_x / e_x.sum()
 
 
+INJECT_RULE_WEIGHT = 0.9
+
+# Deterministic keyword classifier for operator-injected signals (no LLM authority).
+INJECT_KEYWORDS = {
+    "H_EXTERNAL": ["stripe", "third-party", "third party", "external", "provider", "vendor", "partner", "upstream api", "status page"],
+    "H_DB": ["failover", "replica", "database", "iops", "deadlock", "slow quer", "disk", "db cpu", "replication"],
+    "H_TRAFFIC": ["traffic", "surge", "ddos", "bot ", "flash sale", "request rate", "load spike"],
+    "H_DEPLOY": ["deploy", "release", "rollout", "regression", "canary", "new version", "hotfix"],
+    "H_POOL": ["pool", "max_connections", "connection limit", "connection wait"],
+}
+NEGATIONS = ["not ", "no ", "ruled out", "healthy", "nominal", "normal", "resolved", "false alarm", "unrelated"]
+INJECT_FOLLOWUP_TOOL = {
+    "H_EXTERNAL": "trace_breakdown", "H_DB": "get_db_metrics", "H_TRAFFIC": "detect_anomalies",
+    "H_DEPLOY": "errors_by_version", "H_POOL": "get_pool_metrics",
+}
+
+
+def classify_injection(text: str) -> List[Dict[str, Any]]:
+    """Map free-text injected evidence onto hypotheses (SUPPORTS/CONTRADICTS) by keyword match."""
+    t = (text or "").lower()
+    negated = any(n in t for n in NEGATIONS)
+    out = []
+    for key, kws in INJECT_KEYWORDS.items():
+        hits = [k for k in kws if k in t]
+        if hits:
+            out.append({
+                "hypothesis_key": key,
+                "relation": "CONTRADICTS" if negated else "SUPPORTS",
+                "strength": min(1.0, 0.6 + 0.15 * len(hits)),
+                "explanation": f"Operator-injected signal matched keywords {hits}",
+            })
+    return out
+
+
+def _compute_scores(c, inv_id: str, tested: Set[str]):
+    """score = prior + sum(sign * strength * weight); necessary falsifier => -2.0 and RULED_OUT."""
+    hyps_db = c.execute(
+        "SELECT id, key, title, prior FROM hypotheses WHERE investigation_id = ?", (inv_id,)
+    ).fetchall()
+    scores_by_key, status_by_key, coverage_by_key = {}, {}, {}
+    for h in hyps_db:
+        h_key = h["key"]
+        tmpl = next((t for t in HYPOTHESIS_TEMPLATES if t["key"] == h_key), None)
+        total_expectations = len(tmpl["expectations"]) if tmpl else 1
+        exp_tools = set(e["tool"] for e in tmpl["expectations"]) if tmpl else set()
+        coverage = len(exp_tools.intersection(tested)) / total_expectations
+        links = c.execute(
+            """SELECT l.relation, l.strength, l.rule FROM links l
+               JOIN evidence e ON l.evidence_id = e.id
+               WHERE l.hypothesis_id = ? AND e.investigation_id = ?""",
+            (h["id"], inv_id),
+        ).fetchall()
+        h_score = float(h["prior"])
+        ruled_out = False
+        for l in links:
+            is_necessary, weight = False, 0.5
+            if l["rule"] == "injected_signal":
+                weight = INJECT_RULE_WEIGHT
+            elif tmpl:
+                for e in tmpl["expectations"]:
+                    if e["name"] == l["rule"]:
+                        is_necessary, weight = e["necessary"], e["weight"]
+                        break
+            sign = 1.0 if l["relation"] == "SUPPORTS" else (-1.0 if l["relation"] == "CONTRADICTS" else 0.0)
+            h_score += sign * float(l["strength"]) * weight
+            if is_necessary and l["relation"] == "CONTRADICTS" and float(l["strength"]) >= 0.7:
+                ruled_out = True
+                h_score -= 2.0
+        scores_by_key[h_key] = h_score
+        status_by_key[h_key] = "RULED_OUT" if ruled_out else "PLAUSIBLE"
+        coverage_by_key[h_key] = coverage
+    return hyps_db, scores_by_key, status_by_key, coverage_by_key
+
+
 def now_iso() -> str:
     return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -479,6 +553,13 @@ def evaluate_tool_result_rules(tool_name: str, tool_result: Dict[str, Any]) -> L
                     "rule": "ordering",
                     "explanation": f"Dependency topology confirms earliest anomalous service is '{orig}' with healthy downstream dependencies."
                 })
+                links_to_create.append({
+                    "hypothesis_key": "H_EXTERNAL",
+                    "relation": "CONTRADICTS",
+                    "strength": 0.75,
+                    "rule": "gateway_latency",
+                    "explanation": f"Fault origin is localized upstream to '{orig}'; downstream external dependencies are healthy, refuting external gateway outage."
+                })
 
     elif tool_name == "detect_anomalies":
         # Check traffic proportionality
@@ -593,10 +674,24 @@ def step(inv_id: str) -> Dict[str, Any]:
         if "get_config_changes" in tested_tools and "get_pool_metrics" not in tested_tools:
             pending_follow_up = "get_pool_metrics"
 
+        # Injected evidence queues a verification tool for the newly favoured hypothesis
+        # (re-run allowed even if the tool ran before, to check the claim against fresh data).
+        planning_tested = set(tested_tools)
+        inj_steps = [x for x in state_obj["steps"] if x["tool"] == "inject"]
+        if inj_steps:
+            last_inj = inj_steps[-1]
+            ft = last_inj["args"].get("followup_tool")
+            ran_after = any(x["tool"] == ft and x["n"] > last_inj["n"] for x in state_obj["steps"])
+            if ft and not ran_after:
+                pending_follow_up = ft
+                planning_tested.discard(ft)
+
         # Plan tool
         chosen_tool, tool_args, rationale, candidates = plan_next_tool(
-            inv_id, tested_tools, prev_leader_key, pending_follow_up
+            inv_id, planning_tested, prev_leader_key, pending_follow_up
         )
+        if inj_steps and pending_follow_up == chosen_tool:
+            rationale = f"Verify injected signal: re-test '{chosen_tool}' against fresh data"
 
         # Run tool
         tool_result = tools.run_tool(chosen_tool, tool_args)
@@ -607,7 +702,8 @@ def step(inv_id: str) -> Dict[str, Any]:
         # Check replan reasons
         replan_reason = None
         if pending_follow_up == chosen_tool:
-            replan_reason = "Follow-up triggered by prior configuration analysis"
+            replan_reason = ("Verification of injected evidence" if inj_steps
+                             else "Follow-up triggered by prior configuration analysis")
 
         # Insert Step
         c.execute(
@@ -667,66 +763,9 @@ def step(inv_id: str) -> Dict[str, Any]:
                     )
 
         # Compute updated scores for each hypothesis
-        # score = prior + sum(sign * strength * weight)
-        # necessary expectation contradicted at strength >= 0.7 gives score -= 2.0 and RULED_OUT
-        hyps_db = c.execute(
-            "SELECT id, key, title, prior FROM hypotheses WHERE investigation_id = ?",
-            (inv_id,)
-        ).fetchall()
-
-        scores_by_key = {}
-        status_by_key = {}
-        coverage_by_key = {}
-
-        for h in hyps_db:
-            h_id = h["id"]
-            h_key = h["key"]
-            prior_val = float(h["prior"])
-
-            # Find matching template
-            tmpl = next((t for t in HYPOTHESIS_TEMPLATES if t["key"] == h_key), None)
-            total_expectations = len(tmpl["expectations"]) if tmpl else 1
-            exp_tools = set(e["tool"] for e in tmpl["expectations"]) if tmpl else set()
-            tested_exp_tools = exp_tools.intersection(tested_tools.union({chosen_tool}))
-            coverage = len(tested_exp_tools) / total_expectations
-
-            # Gather all evidence links for this hypothesis
-            links = c.execute(
-                """SELECT l.relation, l.strength, l.rule
-                   FROM links l
-                   JOIN evidence e ON l.evidence_id = e.id
-                   WHERE l.hypothesis_id = ? AND e.investigation_id = ?""",
-                (h_id, inv_id)
-            ).fetchall()
-
-            h_score = prior_val
-            ruled_out = False
-
-            for l in links:
-                rel = l["relation"]
-                st = float(l["strength"])
-                rule_name = l["rule"]
-
-                # Check if this rule is a necessary expectation
-                is_necessary = False
-                weight = 0.5
-                if tmpl:
-                    for e in tmpl["expectations"]:
-                        if e["name"] == rule_name:
-                            is_necessary = e["necessary"]
-                            weight = e["weight"]
-                            break
-
-                sign = 1.0 if rel == "SUPPORTS" else (-1.0 if rel == "CONTRADICTS" else 0.0)
-                h_score += sign * st * weight
-
-                if is_necessary and rel == "CONTRADICTS" and st >= 0.7:
-                    ruled_out = True
-                    h_score -= 2.0
-
-            scores_by_key[h_key] = h_score
-            status_by_key[h_key] = "RULED_OUT" if ruled_out else "PLAUSIBLE"
-            coverage_by_key[h_key] = coverage
+        hyps_db, scores_by_key, status_by_key, coverage_by_key = _compute_scores(
+            c, inv_id, tested_tools.union({chosen_tool})
+        )
 
         # Softmax shares across all hypotheses
         score_vals = np.array([scores_by_key[h["key"]] for h in hyps_db])
@@ -785,7 +824,11 @@ def step(inv_id: str) -> Dict[str, Any]:
                     break
 
         new_state = "INVESTIGATING"
-        if step_n >= 5 and new_leader_share >= 0.60 and margin >= 0.25 and leader_nec_tested and rivals_safe:
+        # Never conclude before every hypothesis's necessary falsifier has been tested
+        all_nec_tools = set(e["tool"] for t in HYPOTHESIS_TEMPLATES for e in t["expectations"] if e["necessary"])
+        all_nec_tested = all_nec_tools.issubset(tested_tools.union({chosen_tool}))
+
+        if step_n >= 5 and new_leader_share >= 0.60 and margin >= 0.25 and leader_nec_tested and rivals_safe and all_nec_tested:
             new_state = "CONCLUDED"
         elif step_n >= 12:
             new_state = "INCONCLUSIVE"
@@ -810,16 +853,22 @@ def step(inv_id: str) -> Dict[str, Any]:
             ).fetchall()
             ev_ids = [r["id"] for r in ev_rows]
 
-            # Compute impact figures generically
-            anom_svcs = list(set([o["data"].get("service", "") for o in tool_result.get("observations", []) if "service" in o.get("data", {})]))
+            # Impact computed from telemetry rows
+            from app.evidence import compute_measured_impact
+            anom_svcs = sorted(set(o["data"].get("service", "") for o in tool_result.get("observations", []) if o.get("data", {}).get("service")))
+            if not anom_svcs:
+                anom_svcs = sorted(set(r["service_id"] for r in c.execute(
+                    "SELECT DISTINCT service_id FROM alerts").fetchall()))
+            _m = compute_measured_impact(c, anom_svcs)["measured"]
             impact_data = {
-                "affected_services": anom_svcs if anom_svcs else ["primary_service", "ingress_gateway"],
-                "peak_error_rates": {s: 0.12 for s in anom_svcs} if anom_svcs else {"primary_service": 0.12},
-                "duration_minutes": 26,
-                "failed_traces": 44,
-                "failed_payment_logs": 22
+                "affected_services": anom_svcs,
+                "peak_error_rates": _m["measured_peak_error_rates"],
+                "duration_minutes": _m["measured_incident_duration_mins"],
+                "failed_traces": _m["measured_failed_transactions"],
+                "failed_payment_logs": _m["measured_failed_payment_logs"],
             }
 
+            c.execute("DELETE FROM findings WHERE investigation_id = ?", (inv_id,))
             c.execute(
                 """INSERT INTO findings (investigation_id, hypothesis_id, share, coverage, margin, status,
                                          explanation, explanation_source, grounding_score, evidence_ids, impact)
@@ -859,45 +908,89 @@ def step(inv_id: str) -> Dict[str, Any]:
 
 
 def inject(inv_id: str, inject_type: str, payload: Dict[str, Any], actor: str = "operator") -> Dict[str, Any]:
-    """Inject new live evidence / event into active investigation, triggering replan."""
+    """Inject a new live signal (e.g. the jury's surprise). It is stored as traceable evidence,
+    linked to hypotheses by a deterministic classifier, re-scored immediately, and the
+    investigation is reopened with a verification tool queued for the newly favoured hypothesis."""
     c = db.conn()
     try:
+        inv = c.execute("SELECT state FROM investigations WHERE id = ?", (inv_id,)).fetchone()
+        if not inv:
+            raise KeyError(f"Investigation {inv_id} not found")
         step_n = c.execute("SELECT count(*) as c FROM steps WHERE investigation_id = ?", (inv_id,)).fetchone()["c"]
         text_desc = payload.get("text") or payload.get("message") or f"Injected {inject_type} event"
         ev_id = f"INJ_{uuid.uuid4().hex[:6]}"
+        tested = set(r["tool"] for r in c.execute(
+            "SELECT tool FROM steps WHERE investigation_id = ? AND tool IS NOT NULL", (inv_id,)).fetchall())
 
-        # Record step
+        prev = c.execute(
+            """SELECT h.key, sc.share FROM hypotheses h JOIN scores sc ON sc.hypothesis_id = h.id
+               WHERE h.investigation_id = ? AND sc.id = (SELECT max(id) FROM scores WHERE hypothesis_id = h.id)
+               ORDER BY sc.share DESC""", (inv_id,)).fetchall()
+        prev_leader = prev[0]["key"] if prev else None
+        prev_share = {r["key"]: float(r["share"]) for r in prev}
+
+        matches = classify_injection(text_desc)
+        supported = [m for m in matches if m["relation"] == "SUPPORTS"]
+        target = max(supported, key=lambda m: m["strength"])["hypothesis_key"] if supported else None
+        followup = INJECT_FOLLOWUP_TOOL.get(target) if target else None
+
         c.execute(
             """INSERT INTO steps (investigation_id, n, kind, tool, args, rationale, candidates, summary, replan_reason, ts)
                VALUES (?, ?, 'TOOL_CALL', 'inject', ?, ?, '[]', ?, ?, ?)""",
-            (
-                inv_id,
-                step_n,
-                json.dumps(payload),
-                f"External evidence injection by actor '{actor}'",
-                f"Injected {inject_type}: {text_desc}",
-                f"Replan triggered by injected {inject_type} event",
-                now_iso()
-            )
+            (inv_id, step_n,
+             json.dumps({**payload, "followup_tool": followup, "target_hypothesis": target}),
+             f"External evidence injection by actor '{actor}'",
+             f"Injected {inject_type}: {text_desc}", "pending", now_iso()),
         )
         step_id = c.execute("SELECT last_insert_rowid() as id").fetchone()["id"]
-
-        # Insert evidence
         c.execute(
             """INSERT INTO evidence (id, investigation_id, step_id, text, ts_from, ts_to, refs, extracted_by, quote, verified)
-               VALUES (?, ?, ?, ?, ?, ?, '[]', 'injected', NULL, 1)""",
-            (ev_id, inv_id, step_id, text_desc, now_iso(), now_iso())
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'injected', ?, 0)""",
+            (ev_id, inv_id, step_id, text_desc, now_iso(), now_iso(),
+             json.dumps([{"table": "injected_signal", "id": ev_id, "actor": actor, "type": inject_type}]), text_desc),
         )
+        for m in matches:
+            h_row = c.execute("SELECT id FROM hypotheses WHERE investigation_id = ? AND key = ?",
+                              (inv_id, m["hypothesis_key"])).fetchone()
+            if h_row:
+                c.execute(
+                    """INSERT INTO links (evidence_id, hypothesis_id, relation, strength, rule, explanation)
+                       VALUES (?, ?, ?, ?, 'injected_signal', ?)""",
+                    (ev_id, h_row["id"], m["relation"], m["strength"], m["explanation"]))
 
-        # Audit log via recover module to maintain tamper-evident hash-chain
-        from app import recover
-        recover.audit(actor, "INJECT_EVIDENCE", "investigation", {"type": inject_type, "evidence_id": ev_id, "payload": payload}, connection=c)
+        # Re-score immediately so the effect of the new evidence is visible
+        hyps_db, scores_by_key, status_by_key, coverage_by_key = _compute_scores(c, inv_id, tested)
+        shares = softmax(np.array([scores_by_key[h["key"]] for h in hyps_db]))
+        for idx, h in enumerate(hyps_db):
+            st = status_by_key[h["key"]]
+            if st != "RULED_OUT":
+                st = "LEADING" if (shares[idx] == np.max(shares) and shares[idx] > 0.4) else "PLAUSIBLE"
+            c.execute(
+                "INSERT INTO scores (hypothesis_id, step_id, score, share, coverage, status) VALUES (?, ?, ?, ?, ?, ?)",
+                (h["id"], step_id, scores_by_key[h["key"]], float(shares[idx]), coverage_by_key[h["key"]], st))
+        new_leader = hyps_db[int(np.argmax(shares))]["key"]
+        share_delta = {h["key"]: round(float(shares[i]) - prev_share.get(h["key"], 0.0), 4) for i, h in enumerate(hyps_db)}
 
-        # Force state to INVESTIGATING if was CONCLUDED
+        if not matches:
+            reason = "Injected signal matched no hypothesis; recorded as context, scores unchanged"
+        elif new_leader != prev_leader:
+            reason = f"Injected evidence changed leader from {prev_leader} to {new_leader}"
+        else:
+            reason = (f"Injected evidence re-scored hypotheses ({', '.join(m['hypothesis_key'] for m in matches)}); "
+                      f"leader {new_leader} retained, verification of {target or 'n/a'} queued via {followup or 'n/a'}")
+        c.execute("UPDATE steps SET replan_reason = ? WHERE id = ?", (reason, step_id))
+        # Reopen: previous conclusion is no longer final
+        c.execute("DELETE FROM findings WHERE investigation_id = ?", (inv_id,))
         c.execute("UPDATE investigations SET state = 'INVESTIGATING' WHERE id = ?", (inv_id,))
-        c.commit()
 
-        return {"evidence_id": ev_id, "step_n": step_n, "status": "INJECTED_AND_REPLANNED"}
+        from app import recover
+        recover.audit(actor, "INJECT_EVIDENCE", "investigation",
+                      {"type": inject_type, "evidence_id": ev_id, "payload": payload,
+                       "links": [(m["hypothesis_key"], m["relation"]) for m in matches]}, connection=c)
+        c.commit()
+        return {"evidence_id": ev_id, "step_n": step_n, "status": "INJECTED_AND_REPLANNED",
+                "links": matches, "leader_before": prev_leader, "leader_after": new_leader,
+                "share_delta": share_delta, "replan_reason": reason, "queued_followup_tool": followup}
     finally:
         c.close()
 

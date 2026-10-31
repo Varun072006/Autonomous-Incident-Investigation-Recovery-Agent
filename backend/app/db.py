@@ -272,6 +272,28 @@ CREATE TABLE IF NOT EXISTS llm_claims (
     reason TEXT
 );
 
+CREATE TABLE IF NOT EXISTS post_incident_reports (
+    id TEXT PRIMARY KEY,
+    investigation_id TEXT NOT NULL REFERENCES investigations(id),
+    title TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    root_cause_key TEXT NOT NULL,
+    root_cause_title TEXT NOT NULL,
+    origin_service TEXT NOT NULL,
+    affected_services TEXT NOT NULL,
+    measured_impact TEXT NOT NULL,
+    estimated_impact TEXT NOT NULL,
+    timeline_summary TEXT NOT NULL,
+    hypotheses_evaluated TEXT NOT NULL,
+    rejected_hypotheses TEXT NOT NULL,
+    diagnostic_actions TEXT NOT NULL,
+    recovery_action TEXT NOT NULL,
+    recovery_verdict TEXT NOT NULL,
+    before_after_telemetry TEXT NOT NULL,
+    prevention_recommendations TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_metrics ON metrics(service_id, name, ts, branch);
 CREATE INDEX IF NOT EXISTS idx_logs ON logs(service_id, ts);
 CREATE INDEX IF NOT EXISTS idx_spans ON spans(service_id, ts, branch);
@@ -293,7 +315,7 @@ def reset():
     c = conn()
     try:
         tables = [
-            "llm_claims", "llm_calls", "verifications", "actions", "findings",
+            "post_incident_reports", "llm_claims", "llm_calls", "verifications", "actions", "findings",
             "scores", "links", "evidence", "steps", "hypotheses", "investigations",
             "past_incidents", "tickets", "alerts", "spans", "logs", "metrics",
             "config_changes", "deployments", "dependencies", "services", "audit_log"

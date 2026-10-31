@@ -10,16 +10,16 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
     );
   }
 
-  // Well-spaced coordinates so nodes never overlap or get clipped
+  // Generously-spaced coordinates so nodes never overlap or get clipped
   const positions = {
-    'web-frontend': { x: 90, y: 150, type: 'Edge Client', tier: 'Tier 0' },
-    'api-gateway': { x: 260, y: 150, type: 'API Gateway', tier: 'Tier 1' },
-    'checkout-api': { x: 440, y: 150, type: 'Orchestrator', tier: 'Tier 1' },
-    'inventory-service': { x: 640, y: 65, type: 'Inventory Domain', tier: 'Tier 2' },
-    'payment-service': { x: 640, y: 235, type: 'Payment Domain', tier: 'Tier 1' },
-    'orders-db': { x: 840, y: 65, type: 'Document DB', tier: 'Tier 1' },
-    'payments-db': { x: 840, y: 195, type: 'PostgreSQL Primary', tier: 'Tier 0' },
-    'payment-gateway': { x: 840, y: 285, type: 'Third-Party Stripe', tier: 'External' }
+    'web-frontend': { x: 88, y: 150, type: 'Edge Client', tier: 'Tier 0' },
+    'api-gateway': { x: 255, y: 150, type: 'API Gateway', tier: 'Tier 1' },
+    'checkout-api': { x: 435, y: 150, type: 'Orchestrator', tier: 'Tier 1' },
+    'inventory-service': { x: 650, y: 65, type: 'Inventory Domain', tier: 'Tier 2' },
+    'payment-service': { x: 650, y: 235, type: 'Payment Domain', tier: 'Tier 1' },
+    'orders-db': { x: 865, y: 65, type: 'Document DB', tier: 'Tier 1' },
+    'payments-db': { x: 865, y: 195, type: 'PostgreSQL Primary', tier: 'Tier 0' },
+    'payment-gateway': { x: 865, y: 285, type: 'Third-Party Stripe', tier: 'External' }
   };
 
   const getNodeStyles = (status, isSelected) => {
@@ -46,10 +46,15 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
     };
   };
 
+  const NODE_W = 154;
+  const NODE_H = 56;
+  const HALF_W = NODE_W / 2;
+  const HALF_H = NODE_H / 2;
+
   return (
     <div className="w-full flex flex-col select-none">
-      <div className="overflow-x-auto overflow-y-hidden py-2">
-        <svg viewBox="0 0 960 350" className="w-full min-w-[760px] h-[320px]">
+      <div className="overflow-x-auto overflow-y-hidden py-1">
+        <svg viewBox="0 0 970 340" className="w-full min-w-[760px] h-[310px]">
           <defs>
             <marker
               id="topo-arrow"
@@ -71,9 +76,13 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
             const isCriticalPath = (edge.source === 'checkout-api' && edge.target === 'payment-service') ||
                                    (edge.source === 'payment-service' && edge.target === 'payments-db');
 
-            // Draw curved path
-            const dx = (p2.x - p1.x) * 0.5;
-            const pathData = `M ${p1.x + 70} ${p1.y} C ${p1.x + 70 + dx} ${p1.y}, ${p2.x - 70 - dx} ${p2.y}, ${p2.x - 70} ${p2.y}`;
+            // Draw curved path connecting right port of p1 to left port of p2
+            const startX = p1.x + HALF_W;
+            const startY = p1.y;
+            const endX = p2.x - HALF_W;
+            const endY = p2.y;
+            const dx = (endX - startX) * 0.5;
+            const pathData = `M ${startX} ${startY} C ${startX + dx} ${startY}, ${endX - dx} ${endY}, ${endX} ${endY}`;
 
             return (
               <path
@@ -90,38 +99,38 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
 
           {/* Service Nodes */}
           {graphData.nodes.map((node) => {
-            const meta = positions[node.id] || { x: 100, y: 100, type: 'Service', tier: 'T1' };
+            const meta = positions[node.id] || { x: 100, y: 100, type: 'Service', tier: 'Tier 1' };
             const isSelected = selectedNodeId === node.id;
             const styles = getNodeStyles(node.status, isSelected);
 
             return (
               <g
                 key={node.id}
-                transform={`translate(${meta.x - 70}, ${meta.y - 28})`}
-                className="cursor-pointer transition-transform duration-100 hover:scale-[1.03]"
+                transform={`translate(${meta.x - HALF_W}, ${meta.y - HALF_H})`}
+                className="cursor-pointer transition-colors"
                 onClick={() => onSelectNode && onSelectNode(node)}
                 style={{ filter: styles.shadow }}
               >
                 {/* Node Box */}
                 <rect
-                  width="140"
-                  height="56"
-                  rx="10"
+                  width={NODE_W}
+                  height={NODE_H}
+                  rx="9"
                   fill="#FFFFFF"
                   stroke={styles.border}
-                  strokeWidth={isSelected ? '2' : '1'}
+                  strokeWidth={isSelected ? '2' : '1.2'}
                 />
 
                 {/* Left/Right Port Dots */}
-                <circle cx="0" cy="28" r="3.5" fill="#FFFFFF" stroke="#94A3B8" strokeWidth="1.5" />
-                <circle cx="140" cy="28" r="3.5" fill="#FFFFFF" stroke="#94A3B8" strokeWidth="1.5" />
+                <circle cx="0" cy={HALF_H} r="3" fill="#FFFFFF" stroke="#94A3B8" strokeWidth="1.5" />
+                <circle cx={NODE_W} cy={HALF_H} r="3" fill="#FFFFFF" stroke="#94A3B8" strokeWidth="1.5" />
 
                 {/* Health Status Dot */}
-                <circle cx="16" cy="18" r="4" fill={styles.dotColor} />
+                <circle cx="15" cy="18" r="4" fill={styles.dotColor} />
 
-                {/* Service Name (Full, Uncut) */}
+                {/* Service Name */}
                 <text
-                  x="26"
+                  x="25"
                   y="21"
                   fill="#0F172A"
                   fontSize="11"
@@ -131,10 +140,10 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
                   {node.name}
                 </text>
 
-                {/* Service Subtitle / Type */}
+                {/* Service Subtitle / Type (Line 2) */}
                 <text
-                  x="26"
-                  y="38"
+                  x="25"
+                  y="35"
                   fill="#64748B"
                   fontSize="9.5"
                   fontWeight="400"
@@ -143,17 +152,45 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
                   {meta.type}
                 </text>
 
-                {/* Tier Badge */}
+                {/* Tier Badge (Line 3 - separated so never collides) */}
                 <text
-                  x="126"
-                  y="38"
-                  textAnchor="end"
+                  x="25"
+                  y="47"
                   fill="#94A3B8"
-                  fontSize="9"
+                  fontSize="8.5"
                   fontFamily="JetBrains Mono, monospace"
+                  fontWeight="500"
                 >
                   {meta.tier}
                 </text>
+
+                {/* Anomalous / Degraded status flag on the right if applicable */}
+                {node.status === 'critical' && (
+                  <text
+                    x={NODE_W - 10}
+                    y="47"
+                    textAnchor="end"
+                    fill="#EF4444"
+                    fontSize="8.5"
+                    fontWeight="600"
+                    fontFamily="Inter, system-ui, sans-serif"
+                  >
+                    Anomalous
+                  </text>
+                )}
+                {node.status === 'warning' && (
+                  <text
+                    x={NODE_W - 10}
+                    y="47"
+                    textAnchor="end"
+                    fill="#F59E0B"
+                    fontSize="8.5"
+                    fontWeight="600"
+                    fontFamily="Inter, system-ui, sans-serif"
+                  >
+                    Affected
+                  </text>
+                )}
               </g>
             );
           })}

@@ -1,5 +1,6 @@
 """Evidence management, unified timeline reconstruction, and blast-radius analysis."""
 import json
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from app import db, tools
@@ -94,6 +95,29 @@ def build_unified_timeline(since: Optional[str] = None, until: Optional[str] = N
         # Sort timeline deterministically by UTC timestamp
         events.sort(key=lambda x: (x["ts"], x["type"], x["id"]))
 
+        # Identify first abnormal event, trigger event, and first failing service
+        trigger_found = False
+        first_failing_svc = None
+
+        for ev in events:
+            if ev["type"] in ("CONFIG_CHANGE", "DEPLOYMENT") and not trigger_found:
+                ev["is_trigger_event"] = True
+                ev["is_consequence"] = False
+                ev["cascade_depth"] = 0
+                trigger_found = True
+            elif ev["type"] in ("ANOMALY_ONSET", "ALERT"):
+                ev["is_trigger_event"] = False
+                ev["is_consequence"] = True
+                if not first_failing_svc:
+                    first_failing_svc = ev["service"]
+                    ev["cascade_depth"] = 1
+                else:
+                    ev["cascade_depth"] = 1 if ev["service"] == first_failing_svc else 2
+            else:
+                ev["is_trigger_event"] = False
+                ev["is_consequence"] = True
+                ev["cascade_depth"] = 2
+
         if since:
             events = [e for e in events if e["ts"] >= since]
         if until:
@@ -104,8 +128,106 @@ def build_unified_timeline(since: Optional[str] = None, until: Optional[str] = N
         c.close()
 
 
+def normalize_evidence_item(
+    source_system: str,
+    source_type: str,
+    service_name: str,
+    timestamp: str,
+    raw_source_ref: Dict[str, Any],
+    normalized_evidence: str,
+    trace_id: Optional[str] = None,
+    provenance: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """Multimodal evidence normalizer: converts incoming data from any of the 12 operational
+    sources (logs, metrics, traces, alerts, deployments, configs, tickets, etc.)
+    into a standardized traceable internal evidence representation.
+    """
+    evidence_id = f"EV_{source_type[:4].upper()}_{uuid.uuid4().hex[:6]}"
+    return {
+        "evidence_id": evidence_id,
+        "source_system": source_system,
+        "source_type": source_type,
+        "service_name": service_name,
+        "timestamp": timestamp,
+        "raw_source_ref": raw_source_ref,
+        "normalized_evidence": normalized_evidence,
+        "trace_id": trace_id,
+        "provenance": provenance or {"extracted_by": "deterministic_normalizer", "integrity_verified": True}
+    }
+
+
+def compute_measured_impact(c, anomalous_svcs: List[str]) -> Dict[str, Any]:
+    """Derive impact figures from telemetry rows. 'measured' = directly counted; 'estimated' = extrapolated."""
+    # Gateway-facing SLI: highest-tier (lowest number) anomalous service that exposes error_rate
+    err_rows = c.execute(
+        "SELECT service_id, ts, value FROM metrics WHERE name='error_rate' AND branch='incident' ORDER BY ts"
+    ).fetchall()
+    base = {}
+    for r in err_rows[:15]:
+        base.setdefault(r["service_id"], []).append(r["value"])
+    base_mean = {k: sum(v) / len(v) for k, v in base.items()}
+
+    breach_minutes = {}
+    for r in err_rows:
+        if r["value"] > max(0.01, 3 * base_mean.get(r["service_id"], 0)):
+            breach_minutes.setdefault(r["service_id"], set()).add(r["ts"])
+    all_breach = sorted(set().union(*breach_minutes.values())) if breach_minutes else []
+    first_alert = c.execute("SELECT min(ts) as t FROM alerts").fetchone()["t"]
+    onset = all_breach[0] if all_breach else first_alert
+    end = c.execute("SELECT max(ts) as t FROM metrics WHERE branch='incident'").fetchone()["t"]
+
+    def _mins(a, b):
+        from datetime import datetime
+        f = lambda x: datetime.fromisoformat(x.replace("Z", "+00:00"))
+        return int(round((f(b) - f(a)).total_seconds() / 60)) if a and b else 0
+
+    peak_err = {}
+    for svc, name, mx in c.execute(
+        "SELECT service_id, name, max(value) FROM metrics WHERE branch='incident' AND name IN ('error_rate') GROUP BY service_id, name"
+    ).fetchall():
+        if svc in anomalous_svcs:
+            peak_err[svc] = round(float(mx), 4)
+    p95 = c.execute(
+        "SELECT max(value) as m FROM metrics WHERE name='p95_latency_ms' AND branch='incident'"
+    ).fetchone()["m"]
+    failed_traces = c.execute(
+        "SELECT count(DISTINCT trace_id) as n FROM spans WHERE branch='incident' AND status >= '500'"
+    ).fetchone()["n"]
+    total_traces = c.execute(
+        "SELECT count(DISTINCT trace_id) as n FROM spans WHERE branch='incident'"
+    ).fetchone()["n"]
+    err_logs = c.execute(
+        "SELECT count(*) as n FROM logs WHERE branch='incident' AND level='ERROR' AND service_id IN (%s)"
+        % ",".join("?" * len(anomalous_svcs)) if anomalous_svcs else "SELECT 0 as n",
+        anomalous_svcs if anomalous_svcs else [],
+    ).fetchone()["n"]
+
+    duration = _mins(onset, end)
+    sla_breach = len(all_breach)
+    budget_total_min = 30 * 24 * 60 * 0.001  # 99.9% monthly SLO
+    return {
+        "measured": {
+            "measured_incident_onset": onset,
+            "measured_incident_duration_mins": duration,
+            "measured_failed_transactions": int(failed_traces),
+            "measured_sampled_transactions": int(total_traces),
+            "measured_failed_payment_logs": int(err_logs),
+            "measured_peak_error_rates": peak_err,
+            "measured_peak_p95_latency_ms": float(p95) if p95 is not None else None,
+        },
+        "estimated": {
+            "estimated_sla_breach_mins": sla_breach,
+            "estimated_error_budget_consumed_pct": round(100.0 * sla_breach / budget_total_min, 1),
+            "estimated_failure_ratio_in_sample": round(failed_traces / total_traces, 3) if total_traces else 0.0,
+            "estimation_method": "Minutes with error_rate above max(1%, 3x baseline) vs 99.9% monthly SLO budget (43.2 min); trace sample ratio. User counts are not derivable from telemetry and are not estimated.",
+        },
+    }
+
+
 def calculate_blast_radius() -> Dict[str, Any]:
-    """Calculate blast radius and affected upstream/downstream services."""
+    """Calculate blast radius and affected upstream/downstream services.
+    Explicitly distinguishes measured operational impact from estimated business impact.
+    """
     c = db.ro_conn()
     try:
         # Get all services
@@ -115,6 +237,7 @@ def calculate_blast_radius() -> Dict[str, Any]:
         # Dependencies
         deps = c.execute("SELECT caller_id, callee_id FROM dependencies").fetchall()
         callers_of: Dict[str, List[str]] = {}
+        callees_of: Dict[str, List[str]] = {}
         for d in deps:
             callee = d["callee_id"]
             caller = d["caller_id"]
@@ -122,13 +245,23 @@ def calculate_blast_radius() -> Dict[str, Any]:
                 callers_of[callee] = []
             callers_of[callee].append(caller)
 
+            if caller not in callees_of:
+                callees_of[caller] = []
+            callees_of[caller].append(callee)
+
         # Detect anomalous services
         anom_res = tools.detect_anomalies()
         anomalous_svcs = set()
         for obs in anom_res.get("observations", []):
             anomalous_svcs.add(obs["data"]["service"])
 
-        # Upstream traversal from anomalous services to determine affected blast radius
+        loc = tools.localize_origin().get("observations", [])
+        origin = loc[0]["data"]["origin_service"] if loc else (sorted(anomalous_svcs)[0] if anomalous_svcs else "unknown")
+
+        # Directly affected: origin service
+        directly_affected = [origin] if origin in anomalous_svcs else list(anomalous_svcs)[:1]
+
+        # Downstream affected services (callers affected by cascading latency & 5xx errors)
         affected_svcs = set(anomalous_svcs)
         queue = list(anomalous_svcs)
         traversal_paths = []
@@ -140,24 +273,32 @@ def calculate_blast_radius() -> Dict[str, Any]:
                 if u not in affected_svcs:
                     affected_svcs.add(u)
                     queue.append(u)
-                traversal_paths.append(f"{curr} → (impacts caller) → {u}")
+                traversal_paths.append(f"{curr} → (cascades error to caller) → {u}")
 
-        # Metrics for impact summary
+        downstream_affected = [s for s in affected_svcs if s not in directly_affected]
+
+        # Upstream dependencies of the origin service
+        upstream_deps = callees_of.get(origin, [])
+
+        # Measured impact computed from actual SQLite records (nothing hardcoded)
+        stats = compute_measured_impact(c, sorted(anomalous_svcs))
+        measured = {
+            "directly_affected_services": directly_affected,
+            "downstream_affected_services": sorted(downstream_affected),
+            "upstream_dependencies": sorted(upstream_deps),
+            **stats["measured"],
+        }
+        estimated = stats["estimated"]
+
         return {
-            "origin_candidate": "payment-service",
+            "origin_service": origin,
             "anomalous_services": sorted(list(anomalous_svcs)),
             "affected_services": sorted(list(affected_svcs)),
             "total_affected_count": len(affected_svcs),
             "traversal_paths": traversal_paths,
-            "rubric_label": "Rubric-based heuristic topology estimate (SIMULATED)",
-            "impact_indicators": {
-                "peak_error_rates": {"checkout-api": 0.11, "payment-service": 0.14},
-                "incident_duration_mins": 26,
-                "failed_traces_count": 44,
-                "failed_payment_logs_count": 22,
-                "currency_loss": "Not available (no financial speculation)",
-                "customer_reach_count": "Not available"
-            }
+            "measured_impact": measured,
+            "estimated_impact": estimated,
+            "rubric_label": "Directly measured telemetry & topology graph analysis (SIMULATED)"
         }
     finally:
         c.close()

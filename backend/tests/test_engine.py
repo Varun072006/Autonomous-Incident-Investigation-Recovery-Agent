@@ -67,3 +67,32 @@ def test_no_scenario_literals_in_engine_file():
     for lit in forbidden:
         assert lit not in src, f"Forbidden scenario literal '{lit}' found in engine.py!"
 
+
+
+def _conclude(inv_id):
+    for _ in range(14):
+        if engine.step(inv_id).get("state_after") in ("CONCLUDED", "INCONCLUSIVE"):
+            break
+
+
+def test_inject_rescores_reopens_and_verifies():
+    """Surprise evidence must be linked to hypotheses, change scores, reopen and queue a verification tool."""
+    inv_id = engine.create()
+    _conclude(inv_id)
+    res = engine.inject(inv_id, "log", {"text": "payments-db failover event: replica promoted, disk IOPS saturated"}, "jury")
+    assert res["links"] and res["links"][0]["hypothesis_key"] == "H_DB"
+    assert res["queued_followup_tool"] == "get_db_metrics"
+    st = engine.get(inv_id)
+    assert st["state"] == "INVESTIGATING" and st["finding"] is None
+    h_db = next(h for h in st["hypotheses"] if h["key"] == "H_DB")
+    assert h_db["supporting"] >= 1
+    nxt = engine.step(inv_id)
+    assert nxt["tool"] == "get_db_metrics"  # re-verifies the claim against fresh telemetry
+    assert nxt["replan"]["reason"] == "Verification of injected evidence"
+
+
+def test_inject_unmatched_text_does_not_change_scores():
+    inv_id = engine.create()
+    _conclude(inv_id)
+    res = engine.inject(inv_id, "note", {"text": "lunch order arrived"}, "jury")
+    assert res["links"] == [] and res["leader_before"] == res["leader_after"]

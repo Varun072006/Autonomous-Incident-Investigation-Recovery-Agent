@@ -61,32 +61,36 @@ export default function EvidenceExplorer({ currentInvId }) {
   });
 
   return (
-    <div className="space-y-6 pb-12">
-      {/* Header and Download Proof */}
-      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-4">
+    <div className="flex-1 flex flex-col h-full bg-[#F8FAFC] overflow-y-auto select-none">
+      {/* Header and Download Proof matching Reference UI */}
+      <div className="px-8 pt-7 pb-5 bg-white border-b border-slate-200/80">
+        <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-xl font-bold text-slate-900 flex items-center">
-              <Database className="w-5 h-5 mr-2 text-teal-600" />
-              Evidence Explorer & Lineage
-            </h1>
-            <p className="text-xs text-slate-500 mt-1">
-              Every finding claim resolves to stored rows. Inspect raw database references, provenance, and hypothesis linkage.
+            <div className="flex items-center space-x-2">
+              <h1 className="text-xl font-bold text-slate-900 tracking-tight">
+                Evidence Lineage & Provenance
+              </h1>
+              <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                Audit Store
+              </span>
+            </div>
+            <p className="text-xs text-slate-500 mt-1 max-w-3xl leading-relaxed">
+              Every finding claim strictly resolves to stored database rows. Inspect raw record references, Bayesian weights, and provenance.
             </p>
           </div>
 
           <button
             onClick={handleDownloadProof}
             disabled={downloading || !currentInvId}
-            className="inline-flex items-center px-4 py-2 text-xs font-semibold rounded-lg bg-teal-600 text-white hover:bg-teal-700 shadow-sm transition-colors disabled:opacity-50"
+            className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-md bg-[#0F172A] text-white hover:bg-[#1E293B] shadow-xs transition-colors disabled:opacity-50"
           >
             <Download className="w-3.5 h-3.5 mr-1.5" />
-            {downloading ? 'Exporting...' : 'Download Proof Bundle (JSON)'}
+            {downloading ? 'Exporting...' : 'Export Proof Bundle'}
           </button>
         </div>
 
         {/* Filter bar */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-4 pt-4 border-t border-slate-100 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5 pt-4 border-t border-slate-100 text-xs">
           <div className="relative">
             <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
             <input
@@ -94,14 +98,14 @@ export default function EvidenceExplorer({ currentInvId }) {
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search evidence observations..."
-              className="w-full pl-8 pr-3 py-1.5 border border-slate-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="w-full pl-8 pr-3 py-1.5 border border-slate-200 bg-white rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 text-xs shadow-xs"
             />
           </div>
 
           <select
             value={selectedHypothesis}
             onChange={(e) => setSelectedHypothesis(e.target.value)}
-            className="px-3 py-1.5 border border-slate-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+            className="px-3 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-xs shadow-xs"
           >
             <option value="">All Hypotheses</option>
             <option value="H_POOL">H_POOL (Connection Pool)</option>
@@ -114,7 +118,7 @@ export default function EvidenceExplorer({ currentInvId }) {
           <select
             value={selectedRelation}
             onChange={(e) => setSelectedRelation(e.target.value)}
-            className="px-3 py-1.5 border border-slate-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white"
+            className="px-3 py-1.5 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 bg-white text-xs shadow-xs"
           >
             <option value="">All Relations</option>
             <option value="SUPPORTS">Supports (Positive Evidence)</option>
@@ -123,6 +127,8 @@ export default function EvidenceExplorer({ currentInvId }) {
           </select>
         </div>
       </div>
+
+      <div className="p-8 space-y-6 flex-1">
 
       {/* Evidence Table */}
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm">
@@ -217,6 +223,7 @@ export default function EvidenceExplorer({ currentInvId }) {
             })}
           </div>
         )}
+      </div>
       </div>
     </div>
   );

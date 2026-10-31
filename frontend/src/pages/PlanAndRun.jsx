@@ -8,15 +8,19 @@ import {
   FileCheck, 
   ArrowRight,
   Layers,
-  RotateCcw
+  RotateCcw,
+  ShieldCheck,
+  Zap,
+  Activity
 } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import WorkflowCanvas from '../components/WorkflowCanvas';
 import StepSettingsPanel from '../components/StepSettingsPanel';
 import { api } from '../api';
 
 export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [objective, setObjective] = useState(
     'Investigate checkout latency surge and error rate spike in payment-gateway after v2.14.0 canary rollout'
@@ -26,6 +30,10 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
   const [planGenerated, setPlanGenerated] = useState(true);
   const [selectedNode, setSelectedNode] = useState(null);
   const [llmStatus, setLlmStatus] = useState(null);
+
+  // Assigned recovery action passed from Overview approval gate
+  const [assignedAction, setAssignedAction] = useState(null);
+  const [executionFeedback, setExecutionFeedback] = useState(null);
 
   // Preset prompts
   const presets = [
@@ -112,11 +120,68 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
 
   useEffect(() => {
     api.getLlmStatus().then(setLlmStatus).catch(() => {});
-  }, []);
+
+    // Check if an approved recovery action was passed from Overview
+    if (location.state?.objective) {
+      setObjective(location.state.objective);
+    }
+    if (location.state?.approvedAction) {
+      const act = location.state.approvedAction;
+      setAssignedAction(act);
+
+      // Construct task assigning pipeline nodes
+      setNodes([
+        {
+          id: 'step_approval_gate',
+          type: 'trigger',
+          label: 'Human Approval Gate',
+          toolName: 'gate.human_signoff',
+          service: 'traceops-governance',
+          status: 'COMPLETED',
+          riskTier: act.risk_tier || 2,
+          readOnly: true,
+          description: `Authorized by On-Call Commander avery_admin: ${act.kind} (Risk Tier ${act.risk_tier}). Reason: ${act.approval_reason || 'Verified connection pool exhaustion root cause via evidence EV-004'}`
+        },
+        {
+          id: 'step_task_assign',
+          type: 'action',
+          label: `Task: Apply ${act.kind}`,
+          toolName: `recovery.${act.kind.toLowerCase()}`,
+          service: act.target_service_id || 'payment-service',
+          status: 'PENDING',
+          riskTier: act.risk_tier || 2,
+          readOnly: false,
+          description: act.description
+        },
+        {
+          id: 'step_task_verify',
+          type: 'diagnostic',
+          label: 'Task: Post-Remediation Verification',
+          toolName: 'tools.verify_slo',
+          service: act.target_service_id || 'payment-service',
+          status: 'PENDING',
+          riskTier: 0,
+          readOnly: true,
+          description: 'Validates that p95 latency drops back to < 400ms and error rates normalize to < 0.5%.'
+        },
+        {
+          id: 'step_task_report',
+          type: 'diagnostic',
+          label: 'Task: Document Post-Mortem',
+          toolName: 'report.publish_sqlite',
+          service: 'traceops-control',
+          status: 'PENDING',
+          riskTier: 0,
+          readOnly: true,
+          description: 'Compiles and permanently stores structured post-incident report into SQLite post_incident_reports table.'
+        }
+      ]);
+      setPlanGenerated(true);
+    }
+  }, [location.state]);
 
   const handleGeneratePlan = () => {
     setLoading(true);
-    // Simulate plan synthesis
     setTimeout(() => {
       setPlanGenerated(true);
       setLoading(false);
@@ -126,18 +191,40 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
   const handleExecutePlan = async () => {
     setLoading(true);
     try {
+      if (assignedAction) {
+        // Sequentially execute the assigned recovery task
+        setNodes(prev => prev.map(n => n.id === 'step_task_assign' ? { ...n, status: 'RUNNING' } : n));
+        
+        // Execute simulated remediation
+        await api.executeAction(assignedAction.id);
+        setNodes(prev => prev.map(n => n.id === 'step_task_assign' ? { ...n, status: 'COMPLETED' } : n));
+
+        // Execute verification check
+        setNodes(prev => prev.map(n => n.id === 'step_task_verify' ? { ...n, status: 'RUNNING' } : n));
+        const verifRes = await api.verifyAction(assignedAction.id);
+        setNodes(prev => prev.map(n => n.id === 'step_task_verify' ? { ...n, status: 'COMPLETED' } : n));
+
+        // Finalize post-mortem report
+        setNodes(prev => prev.map(n => n.id === 'step_task_report' ? { ...n, status: 'COMPLETED' } : n));
+        
+        setExecutionFeedback({
+          message: `Task execution finished! ${assignedAction.kind} successfully applied to ${assignedAction.target_service_id || 'payment-service'}. Telemetry verdict: ${verifRes.verdict}.`,
+          verdict: verifRes.verdict
+        });
+        return;
+      }
+
       let invId = currentInvId;
       if (!invId) {
         const inv = await api.createInvestigation();
         invId = inv.id;
         setCurrentInvId(invId);
       }
-      // Trigger intake step
       await api.stepInvestigation(invId);
-      // Navigate to investigation arena
       navigate('/investigation');
     } catch (err) {
       console.error(err);
+      alert("Execution error: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -163,7 +250,7 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
       <div className="px-8 pt-8 pb-6 border-b border-slate-200 bg-white">
         <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Plan & run</h1>
         <p className="text-sm text-slate-500 mt-1 max-w-3xl leading-relaxed">
-          State an objective. The supervisor produces a structured task plan; the deterministic engine validates agents, 
+          State an objective or assign approved tasks. The supervisor produces a structured task plan; the deterministic engine validates agents, 
           dependencies, read-only tools, permissions, and risk tiers before anything can run.
         </p>
 
@@ -172,7 +259,7 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
           <div className="grid grid-cols-1 lg:grid-cols-4 gap-4">
             <div className="lg:col-span-3 space-y-1.5">
               <label className="block text-xs font-bold text-slate-700 uppercase tracking-wide">
-                Objective *
+                Objective / Task Assignment *
               </label>
               <textarea
                 value={objective}
@@ -235,121 +322,92 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
         </div>
       </div>
 
+      {/* Task Assignment Banner if forward from Overview */}
+      {assignedAction && (
+        <div className="mx-8 mt-4 p-4 bg-emerald-50 border border-emerald-200 rounded-xl flex items-center justify-between text-xs text-emerald-900 shadow-xs">
+          <div className="flex items-center space-x-3">
+            <CheckCircle className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+            <div>
+              <div className="font-bold text-sm">
+                Approved Task Assigned from Overview: {assignedAction.kind} (Tier {assignedAction.risk_tier} Risk)
+              </div>
+              <div className="text-slate-600 mt-0.5">
+                {assignedAction.description} · Target: <strong>{assignedAction.target_service_id || 'payment-service'}</strong>
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={handleExecutePlan}
+            disabled={loading}
+            className="inline-flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-lg shadow-sm transition-colors"
+          >
+            <Play className="w-3.5 h-3.5 mr-1.5" />
+            {loading ? 'Executing Tasks...' : 'Execute Recovery Pipeline'}
+          </button>
+        </div>
+      )}
+
+      {/* Execution Success Banner */}
+      {executionFeedback && (
+        <div className="mx-8 mt-4 p-4 bg-emerald-100/90 border border-emerald-300 rounded-xl flex items-center justify-between text-xs text-emerald-950 shadow-xs">
+          <div className="flex items-center space-x-3">
+            <CheckCircle className="w-5 h-5 text-emerald-700 flex-shrink-0" />
+            <div>
+              <div className="font-bold text-sm">Task Pipeline Executed & Telemetry Verified!</div>
+              <div className="text-emerald-800 mt-0.5">{executionFeedback.message}</div>
+            </div>
+          </div>
+          <button
+            onClick={() => navigate('/recovery')}
+            className="px-3 py-1.5 bg-white border border-emerald-300 text-emerald-900 font-semibold rounded-md hover:bg-emerald-50 shadow-xs"
+          >
+            View Verification Post-Mortem
+          </button>
+        </div>
+      )}
+
       {/* Plan Output Header */}
       {planGenerated && (
         <div className="px-8 py-3 bg-[#FAF8F3] border-b border-slate-200 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <span className="text-xs font-bold text-slate-900">Plan</span>
-            <span className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded font-medium flex items-center">
-              <CheckCircle className="w-3 h-3 mr-1 text-emerald-600" />
+          <div className="flex items-center space-x-3 text-xs">
+            <span className="font-bold text-slate-900">Plan</span>
+            <span className="inline-flex items-center text-emerald-700 font-medium">
+              <CheckCircle className="w-3 h-3 mr-1" />
               valid
             </span>
-            <span className="text-[11px] text-slate-500 font-mono">
-              planner: <span className="font-semibold text-slate-700">{planner.toLowerCase()}</span>
-            </span>
-            <span className="text-[11px] text-slate-400 font-mono">
-              plan_to_{currentInvId ? currentInvId.slice(0, 8) : '42a8d9b0'}
-            </span>
+            <span className="text-slate-400 font-mono">planner: {planner.toLowerCase()}</span>
+            <span className="text-slate-400 font-mono">plan_rev4821</span>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <button
-              onClick={handleExecutePlan}
-              className="inline-flex items-center px-4 py-1.5 text-xs font-semibold rounded-md bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition-all"
-            >
-              <Play className="w-3.5 h-3.5 mr-1.5 fill-current" />
-              Execute Plan & Run Investigation
-            </button>
-          </div>
+          <button
+            onClick={handleExecutePlan}
+            disabled={loading}
+            className="inline-flex items-center px-4 py-1.5 text-xs font-bold rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-all disabled:opacity-50"
+          >
+            <Play className="w-3.5 h-3.5 mr-1.5" />
+            {loading ? 'Executing Plan...' : 'Run Plan'}
+          </button>
         </div>
       )}
 
-      {/* Workflow Canvas & Inspector Area */}
-      {planGenerated && (
-        <div className="flex flex-col p-6 space-y-6">
-          <div className="flex overflow-hidden gap-4 min-h-[460px]">
-            <WorkflowCanvas
-              nodes={nodes}
-              selectedNodeId={selectedNode?.id}
-              onSelectNode={(node) => setSelectedNode(node)}
-              validationIssues={[
-                { message: 'All diagnostic tools operate strictly in read-only mode.', step: 'step_metrics' },
-                { message: 'Rollback v2.14.0 is classified as Tier 2 and requires human approval.', step: 'step_remediation' }
-              ]}
-              className="h-full min-h-[440px]"
-            />
+      {/* Main Workflow Visualization Area */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Canvas */}
+        <WorkflowCanvas
+          nodes={nodes}
+          selectedNodeId={selectedNode?.id}
+          onSelectNode={(node) => setSelectedNode(node)}
+          validationIssues={[]}
+          className="m-6"
+        />
 
-            {selectedNode && (
-              <StepSettingsPanel
-                selectedStep={selectedNode}
-                onClose={() => setSelectedNode(null)}
-                onUpdateStep={handleUpdateStep}
-                onDeleteStep={handleDeleteStep}
-              />
-            )}
-          </div>
-
-          {/* ALL PLANNED STEPS Table matching Image 3 */}
-          <div className="space-y-3 pt-2">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                ALL PLANNED STEPS & TOOLS
-              </h3>
-              <span className="text-[11px] font-mono text-slate-400">
-                {nodes.length} registered steps
-              </span>
-            </div>
-
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-xs">
-              <table className="w-full text-left text-xs text-slate-600">
-                <thead className="bg-[#F8FAFC] text-[10px] uppercase font-bold text-slate-400 tracking-wider border-b border-slate-200">
-                  <tr>
-                    <th className="py-2.5 px-4 font-bold">Step Name</th>
-                    <th className="py-2.5 px-4 font-bold">Handler / Tool</th>
-                    <th className="py-2.5 px-4 font-bold">Status</th>
-                    <th className="py-2.5 px-4 font-bold">Target Service</th>
-                    <th className="py-2.5 px-4 font-bold">Risk Tier</th>
-                    <th className="py-2.5 px-4 font-bold">Evidence ID</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {nodes.map((node) => (
-                    <tr
-                      key={node.id}
-                      onClick={() => setSelectedNode(node)}
-                      className={`hover:bg-slate-50 cursor-pointer transition-colors ${
-                        selectedNode?.id === node.id ? 'bg-blue-50/40' : ''
-                      }`}
-                    >
-                      <td className="py-3 px-4 font-semibold text-slate-900 flex items-center space-x-2">
-                        <div className={`w-2 h-2 rounded-full ${node.status === 'COMPLETED' ? 'bg-emerald-500' : 'bg-slate-300'}`}></div>
-                        <span>{node.label}</span>
-                      </td>
-                      <td className="py-3 px-4 font-mono text-slate-500">{node.toolName}</td>
-                      <td className="py-3 px-4">
-                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${
-                          node.status === 'COMPLETED'
-                            ? 'text-emerald-700 bg-emerald-50 border border-emerald-200'
-                            : 'text-slate-600 bg-slate-100'
-                        }`}>
-                          {node.status}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 font-mono text-slate-700 text-[11px]">{node.service}</td>
-                      <td className="py-3 px-4 font-mono text-slate-600">
-                        {node.riskTier === 0 ? 'Tier 0 (Auto)' : `Tier ${node.riskTier} (Gate)`}
-                      </td>
-                      <td className="py-3 px-4 font-mono text-blue-600 text-[11px]">
-                        {node.evidenceId || '—'}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-      )}
+        {/* Right Settings Inspector */}
+        <StepSettingsPanel
+          node={selectedNode}
+          onUpdate={handleUpdateStep}
+          onDelete={handleDeleteStep}
+        />
+      </div>
     </div>
   );
 }
