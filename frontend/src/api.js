@@ -73,6 +73,10 @@ export const api = {
   getLlmStatus: () => request('/api/llm'),
   getLlmCalls: (id) => request(`/api/investigation/${id}/llm-calls`),
 
+  // Incident Reception & AI Plan Synthesis
+  receiveIncident: (payload) => request('/api/incident/receive', { method: 'POST', body: JSON.stringify(payload || {}) }),
+  getAiRecoveryPlan: (id) => request(`/api/actions/${id}/ai-plan`, { method: 'POST' }),
+
   // Actions & Recovery
   getActions: (investigationId) => request(`/api/actions?investigation=${investigationId}`),
   approveAction: (id, by = 'oncall_lead', reason = '', confirmedEvidenceReviewed = false) =>

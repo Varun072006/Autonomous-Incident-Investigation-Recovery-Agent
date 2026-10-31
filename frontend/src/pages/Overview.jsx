@@ -190,6 +190,28 @@ export default function Overview({ currentInvId }) {
 
           <div className="flex items-center space-x-2">
             <button
+              onClick={async () => {
+                try {
+                  const res = await api.receiveIncident({
+                    service: 'payment-service',
+                    title: 'High Latency & Connection Pool Depletion Spike',
+                    urgency: 'CRITICAL',
+                    source: 'pagerduty_webhook'
+                  });
+                  setActionFeedback(`Event Ingested (${res.incident_id}): Operational telemetry fetched from live connectors, timeline updated, and actions ready for SRE approval.`);
+                  setTimeout(() => setActionFeedback(null), 5000);
+                  loadData();
+                } catch (e) {
+                  alert('Incident intake error: ' + e.message);
+                }
+              }}
+              className="inline-flex items-center px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg hover:bg-rose-100 transition-colors shadow-xs"
+              title="Trigger live event-driven incident reception and telemetry fetch"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 mr-1.5 text-rose-600" />
+              Ingest Live Incident Alert
+            </button>
+            <button
               onClick={loadData}
               className="inline-flex items-center px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition-colors shadow-xs"
             >
@@ -419,36 +441,97 @@ export default function Overview({ currentInvId }) {
                   Target Service: <span className="text-slate-600 font-semibold">{act.target_service_id || 'payment-service'}</span> · Rollback: <span className="text-slate-600">{act.rollback_plan || 'Reapply configuration change with ticket reference CHG-4821 if required.'}</span>
                 </div>
 
-                {/* Interactive Action Buttons Matching User Screenshot */}
+                {/* Interactive Action Buttons */}
                 <div className="flex flex-wrap items-center gap-2 pt-1">
-                  <button
-                    onClick={() => handleApproveCandidate(act)}
-                    className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-md bg-[#0D9488] hover:bg-[#0F766E] text-white shadow-xs transition-colors"
-                  >
-                    <CheckCircle className="w-3.5 h-3.5 mr-1.5" />
-                    Approve Candidate
-                  </button>
-
-                  <button
-                    onClick={() => handleReject(act.id)}
-                    className="inline-flex items-center px-3.5 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
-                  >
-                    Reject
-                  </button>
-
-                  <button
-                    onClick={() => handleExecute(act.id)}
-                    className="inline-flex items-center px-3.5 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
-                  >
-                    Execute (SIMULATED)
-                  </button>
-
-                  <button
-                    onClick={() => handleVerify(act.id)}
-                    className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-md bg-[#14B8A6]/90 hover:bg-[#0D9488] text-white shadow-xs transition-colors"
-                  >
-                    Verify Telemetry
-                  </button>
+                  {act.status === 'VERIFIED' ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center px-3 py-1.5 text-xs font-semibold rounded-md bg-emerald-50 text-emerald-700 border border-emerald-300">
+                        <CheckCircle className="w-3.5 h-3.5 mr-1.5 text-emerald-600" />
+                        Verified & Resolved in DB
+                      </span>
+                      <button
+                        onClick={() => navigate('/evidence')}
+                        className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
+                      >
+                        <Database className="w-3.5 h-3.5 mr-1.5 text-blue-600" />
+                        Inspect Dual Evidence
+                      </button>
+                      <button
+                        onClick={() => navigate('/recovery')}
+                        className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
+                      >
+                        <ShieldCheck className="w-3.5 h-3.5 mr-1.5 text-emerald-600" />
+                        Post-Incident Report
+                      </button>
+                    </div>
+                  ) : act.status === 'APPROVED' ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => forwardToPlanAndRun(act, act.approval_reason || 'Approved by SRE')}
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-bold rounded-md bg-blue-600 hover:bg-blue-700 text-white shadow-xs transition-colors"
+                      >
+                        <ArrowRight className="w-3.5 h-3.5 mr-1.5" />
+                        Assigned: Go to Plan & Run
+                      </button>
+                      <button
+                        onClick={() => handleExecute(act.id)}
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs transition-colors"
+                      >
+                        Execute (SIMULATED)
+                      </button>
+                      <button
+                        onClick={() => handleReject(act.id)}
+                        className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : act.status === 'EXECUTED_SIM' ? (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => forwardToPlanAndRun(act, act.approval_reason || 'Approved by SRE')}
+                        className="inline-flex items-center px-3 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
+                      >
+                        View in Plan & Run
+                      </button>
+                      <button
+                        onClick={() => handleVerify(act.id)}
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-bold rounded-md bg-[#14B8A6] hover:bg-[#0D9488] text-white shadow-xs"
+                      >
+                        <CheckCircle className="w-3.5 h-3.5 mr-1.5" />
+                        Verify Telemetry
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        onClick={() => handleApproveCandidate(act)}
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-semibold rounded-md bg-[#0D9488] hover:bg-[#0F766E] text-white shadow-xs transition-colors"
+                      >
+                        <CheckCircle className="w-3.5 h-3.5 mr-1.5" />
+                        Approve Candidate
+                      </button>
+                      <button
+                        onClick={() => handleReject(act.id)}
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-medium rounded-md bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 transition-colors shadow-xs"
+                      >
+                        Reject
+                      </button>
+                      <button
+                        disabled
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-medium rounded-md bg-slate-50 border border-slate-200 text-slate-400 cursor-not-allowed opacity-60"
+                        title="Requires approval before execution"
+                      >
+                        Execute (SIMULATED)
+                      </button>
+                      <button
+                        disabled
+                        className="inline-flex items-center px-3.5 py-1.5 text-xs font-medium rounded-md bg-slate-50 border border-slate-200 text-slate-400 cursor-not-allowed opacity-60"
+                      >
+                        Verify Telemetry
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

@@ -46,8 +46,8 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
     };
   };
 
-  const NODE_W = 154;
-  const NODE_H = 56;
+  const NODE_W = 164;
+  const NODE_H = 62;
   const HALF_W = NODE_W / 2;
   const HALF_H = NODE_H / 2;
 
@@ -143,7 +143,7 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
                 {/* Service Subtitle / Type (Line 2) */}
                 <text
                   x="25"
-                  y="35"
+                  y="36"
                   fill="#64748B"
                   fontSize="9.5"
                   fontWeight="400"
@@ -155,7 +155,7 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
                 {/* Tier Badge (Line 3 - separated so never collides) */}
                 <text
                   x="25"
-                  y="47"
+                  y="51"
                   fill="#94A3B8"
                   fontSize="8.5"
                   fontFamily="JetBrains Mono, monospace"
@@ -167,8 +167,8 @@ export default function DependencyGraph({ graphData, selectedNodeId, onSelectNod
                 {/* Anomalous / Degraded status flag on the right if applicable */}
                 {node.status === 'critical' && (
                   <text
-                    x={NODE_W - 10}
-                    y="47"
+                    x={NODE_W - 12}
+                    y="51"
                     textAnchor="end"
                     fill="#EF4444"
                     fontSize="8.5"

@@ -100,6 +100,47 @@ def get_incident():
         c.close()
 
 
+@app.post("/api/incident/receive")
+def receive_incident(payload: Optional[Dict[str, Any]] = None):
+    """Event-driven incident ingestion:
+    Only when an incident is received does TRACEOPS fetch operational telemetry,
+    detect anomalies, reconstruct the timeline, and populate actionable recovery candidates.
+    """
+    import uuid
+    import json
+    from datetime import datetime, timezone
+    c = db.conn()
+    try:
+        # Reset previous action status back to PENDING for the fresh incident
+        c.execute("UPDATE actions SET status = 'PENDING', approved_by = NULL, approval_reason = NULL, decided_at = NULL, executed_at = NULL")
+        
+        ts = (payload or {}).get("timestamp") or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        title = (payload or {}).get("title") or "High Latency and Payment Failure Cascade"
+        svc = (payload or {}).get("service") or "payment-service"
+        
+        c.execute(
+            """INSERT INTO alerts (service_id, ts, name, severity, observed)
+               VALUES (?, ?, ?, 'CRITICAL', ?)""",
+            (svc, ts, title, json.dumps(payload or {"source": "pagerduty", "urgency": "high"}))
+        )
+        c.commit()
+        
+        # Trigger fresh investigation intake
+        inv_id = engine.create()
+        engine.step(inv_id)
+        
+        return {
+            "status": "INCIDENT_RECEIVED",
+            "incident_id": f"INC-{uuid.uuid4().hex[:6]}",
+            "investigation_id": inv_id,
+            "title": title,
+            "received_at": ts,
+            "message": "Incident received! Fresh operational telemetry fetched, timeline reconstructed, and recovery actions pending SRE review."
+        }
+    finally:
+        c.close()
+
+
 @app.get("/api/graph")
 def get_dependency_graph():
     c = db.ro_conn()
@@ -270,6 +311,8 @@ def get_actions(investigation: Optional[str] = Query(None)):
                 investigation = row["id"]
         finally:
             c.close()
+    if not investigation:
+        investigation = engine.create()
     return recover.recommend(investigation)
 
 
@@ -278,7 +321,20 @@ def approve_action(id: str, req: ActionDecisionRequest):
     res = recover.approve(id, req.by, req.reason, req.confirmed_evidence_reviewed)
     if not res.get("approved"):
         raise HTTPException(status_code=409, detail=res)
+    # Invoke Groq AI for plan synthesis upon approval
+    try:
+        res["ai_plan"] = llm.synthesize_recovery_plan(id)
+    except Exception as e:
+        print("Groq plan synthesis note:", e)
     return res
+
+
+@app.post("/api/actions/{id}/ai-plan")
+def get_ai_recovery_plan(id: str):
+    """Invokes Groq AI (qwen/qwen3.8-27b) to synthesize an intelligent SRE recovery plan.
+    Logs tokens, latency, prompt, and commits the AI assessment into the SQLite evidence store.
+    """
+    return llm.synthesize_recovery_plan(id)
 
 
 @app.post("/api/actions/{id}/reject")
