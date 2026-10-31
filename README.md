@@ -229,27 +229,5 @@ tests/test_tools.py ..                                                     [100%
 
 ---
 
-## 🎬 5-Minute Production SRE Demo Walkthrough
-
-1. **Overview Dashboard (`/`)**:
-   - Inspect the live **Service Dependency Topology**: notice `checkout-api` (orchestrator), `payment-service` (anomalous origin), and `payments-db`.
-   - Scroll to the **Risk-Tiered Action Catalog**: view `REVERT_CONFIG` (Tier 2 Risk, Recommended) in `PENDING` state.
-   - Click **Approve Candidate**: the Human Approval Gate modal opens detailing root cause `CHG-4821` (pool throttle from 50 to 10). Check "Confirmed Evidence Reviewed" and submit.
-2. **Plan & Run (`/plan-and-run`)**:
-   - SRE is automatically routed to Plan & Run.
-   - Observe the **Live Groq AI Inference Banner**: active model `qwen/qwen3.8-27b`, token count ($\approx 820$), inference latency ($\approx 2.3$ s), and SQLite evidence ID `EV-AI-PLAN-xxxx`.
-   - Inspect the **Interactive Workflow Canvas**: 6 dynamic stages synthesized by Groq AI. Click any card to inspect tool details and permissions in the right inspector panel.
-3. **Safe Execution & Dual Evidence Persistence**:
-   - Click **"Execute Approved SRE Flow & Save Dual Evidence"**.
-   - Watch stages transition: `COMPLETED` $\to$ parameter rollback executed $\to$ telemetry verified.
-   - Verification confirms: checkout p95 latency restored to **$397$ ms** (target $< 570$ ms), error rate reduced to **$0.4\%$**, and pool active normalized to **$12$ connections**.
-4. **Evidence & Post-Incident Review**:
-   - Click **"Inspect Saved Evidence"** to navigate to `/evidence`: observe all 75+ records (incident signals + recovery proof `EV-REC-EXEC` and `EV-REC-VERIF`).
-   - Click **"Post-Incident Report"** to view `/recovery`: download the complete cryptographic incident report.
-5. **Auditing & Governance**:
-   - Navigate to `/organization` to verify the **SHA-256 Tamper-Evident Chain** across all recorded actions and sign-offs.
-
----
-
 ## 📄 License
 This project is licensed under the Apache 2.0 License.
