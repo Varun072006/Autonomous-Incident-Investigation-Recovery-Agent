@@ -90,7 +90,7 @@ export default function WorkflowCanvas({
       />
 
       {/* Main Flow Canvas Viewport */}
-      <div className="flex-1 overflow-x-auto overflow-y-auto p-12 flex items-center justify-start min-w-full">
+      <div className="flex-1 overflow-x-auto overflow-y-auto py-8 px-6 flex items-center justify-start min-w-full min-h-[340px]">
         <div 
           className="flex items-center space-x-12 transition-transform duration-150 origin-left"
           style={{ transform: `scale(${zoomLevel})` }}

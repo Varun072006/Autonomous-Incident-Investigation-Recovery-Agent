@@ -523,20 +523,21 @@ export default function PlanAndRun({ currentInvId, setCurrentInvId }) {
         </button>
       </div>
 
-      {/* Interactive Workflow Canvas & Inspector */}
-      <div className="flex-1 flex overflow-hidden">
+      {/* Interactive Workflow Canvas & Inspector Area */}
+      <div className="min-h-[500px] flex p-6 gap-6">
         <WorkflowCanvas
           nodes={nodes}
           selectedNodeId={selectedNode?.id}
           onSelectNode={(node) => setSelectedNode(node)}
           validationIssues={[]}
-          className="m-6"
+          className="flex-1 min-h-[460px] shadow-sm"
         />
 
         <StepSettingsPanel
-          node={selectedNode}
-          onUpdate={handleUpdateStep}
-          onDelete={handleDeleteStep}
+          selectedStep={selectedNode}
+          onClose={() => setSelectedNode(null)}
+          onUpdateStep={handleUpdateStep}
+          onDeleteStep={handleDeleteStep}
         />
       </div>
     </div>
